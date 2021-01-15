@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+
+main() {
+    mkdir -p ~/.mozilla/firefox/default
+    <<EOF install -m644 /dev/stdin ~/.mozilla/firefox/profiles.ini
+[Profile0]
+Name=default
+IsRelative=1
+Path=default
+EOF
+    modutil -list p11-kit-trust -dbdir ~/.mozilla/firefox/default >&/dev/null ||
+    modutil -force -add p11-kit-trust -dbdir ~/.mozilla/firefox/default -libfile /usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-trust.so
+
+    exec /opt/firefox/firefox --no-remote --profile ~/.mozilla/firefox/default "$@"
+}
+
+main "$@"

@@ -1,0 +1,123 @@
+#!/usr/bin/python3
+
+import argparse
+import grp
+import logging
+import os
+import pwd
+import sys
+from pathlib import Path
+from typing import Iterable, List, NoReturn
+
+logger = logging.getLogger("firefox-autofirma")
+
+
+def exec_(cmd: List[str]) -> NoReturn:
+    logger.info(f"Running command: {cmd}")
+    os.execvp(cmd[0], cmd)
+
+
+def mkdirp(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def docker_run_cmd(*opts) -> List[str]:
+    config_path = Path.home() / ".config/firefox-autofirma"
+    logger.info(f"Storing config in {config_path}")
+
+    x_display = os.environ["DISPLAY"]
+    x_socket_dir = Path("/tmp/.X11-unix")
+
+    home = mkdirp(config_path / "home")
+    container_home = Path("/home")
+
+    uid = os.geteuid()
+    gid = os.getegid()
+    extrausers = mkdirp(config_path / "extrausers")
+    pw = pwd.getpwuid(uid)
+    pw = [
+        pw.pw_name,
+        "x",
+        pw.pw_uid,
+        pw.pw_gid,
+        pw.pw_gecos,
+        container_home,
+        "/bin/bash",
+    ]
+    (extrausers / "passwd").write_text(":".join(map(str, pw)) + "\n")
+    gr = grp.getgrgid(gid)
+    gr = [gr.gr_name, "x", gr.gr_gid, ""]
+    (extrausers / "group").write_text(":".join(map(str, gr)) + "\n")
+
+    docker_opts = [
+        f"--env=DISPLAY={x_display}",
+        f"--env=HOME={container_home}",
+        "--interactive",
+        "--rm",
+        "--tty",
+        f"--user={uid}:{gid}",
+        f"--volume={x_socket_dir}:{x_socket_dir}",
+        f"--volume={home}:{container_home}",
+        f"--volume={extrausers}:/var/lib/extrausers:ro",
+    ]
+    docker_opts += opts
+
+    image = "autofirma"
+
+    return ["docker", "run", *docker_opts, image]
+
+
+def firefox_run(command: Iterable[str]) -> NoReturn:
+    cmd = docker_run_cmd("--workdir=/home") + command
+    exec_(cmd)
+
+
+def firefox_setup(cert_path: str) -> NoReturn:
+    cert_path = Path(cert_path)
+    if not cert_path.exists():
+        sys.exit(f"ERROR: certificate file {cert_path} does not exist")
+
+    cmd = docker_run_cmd(
+        f"--volume={cert_path}:/certs/cert.pfx",
+        "--workdir=/certs",
+    )
+    exec_(cmd)
+
+
+def firefox_shell() -> NoReturn:
+    cmd = docker_run_cmd("--entrypoint=/bin/bash")
+    exec_(cmd)
+
+
+def parse_args(args: Iterable[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    cmds = parser.add_subparsers(dest="cmd")
+
+    sub_cmd = cmds.add_parser("run")
+    sub_cmd.add_argument("command", nargs=argparse.REMAINDER)
+
+    sub_cmd = cmds.add_parser("setup")
+    sub_cmd.add_argument("cert")
+
+    sub_cmd = cmds.add_parser("shell")
+
+    return parser.parse_args(args)
+
+
+def main(args: Iterable[str]) -> None:
+    logging.basicConfig(level=logging.INFO)
+
+    args = parse_args(args)
+    if args.cmd == "run":
+        firefox_run(args.command)
+    elif args.cmd == "setup":
+        firefox_setup(args.cert)
+    elif args.cmd == "shell":
+        firefox_shell()
+    else:
+        assert False, "unreachable code"
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
